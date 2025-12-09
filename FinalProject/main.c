@@ -616,6 +616,40 @@ int main(void)
       Year[7] = SPACE;
   }
 
+  // Helper function to delay while still checking alarm
+  void Delay_With_Alarm_Check(unsigned int delay_ms,
+                               unsigned int alarm_h,
+                               unsigned int alarm_m,
+                               unsigned int alarm_s)
+  {
+      unsigned int elapsed = 0;
+      unsigned int step = 100;  // Check every 100ms
+
+      while (elapsed < delay_ms) {
+          // Get current time
+          unsigned int current_hour, current_minute, current_second;
+          Get_RTC_Time(&current_hour, &current_minute, &current_second);
+
+          // Check if alarm triggered
+          if (current_hour == alarm_h &&
+              current_minute == alarm_m &&
+              current_second == alarm_s &&
+              !(GPIOC->IDR & 1)) {
+
+              INDEX = 0;
+              COUNT = 0;
+              Save_Note = Song[0].note;
+              Music_ON = 1;
+              RTC->ISR &= ~(1 << 8);
+          } else if (GPIOC->IDR & 1) {
+              Music_ON = 0;
+          }
+
+          HAL_Delay(step);
+          elapsed += step;
+      }
+  }
+
   updateClock(); // Call update clock function
 
   /* Main Loop Implementation */
@@ -660,11 +694,15 @@ int main(void)
           }
           HAL_Delay(1000);
 
+          Delay_With_Alarm_Check(1000, alarm_hour, alarm_minute, alarm_second);
+
           // Display Year
           for (i = 0; i < 8; i++){
               Seven_Segment_Digit(7-i, Year[i], 0);
           }
           HAL_Delay(1000);
+
+          Delay_With_Alarm_Check(1000, alarm_hour, alarm_minute, alarm_second);
 
           // Display Time
           for (i = 0; i < 8; i++){
@@ -672,11 +710,15 @@ int main(void)
           }
           HAL_Delay(1000);
 
+          Delay_With_Alarm_Check(1000, alarm_hour, alarm_minute, alarm_second);
+
           // Display Alarm
           for (i = 0; i < 8; i++){
               Seven_Segment_Digit(7-i, Alarm[i], 0);
           }
           HAL_Delay(1000);
+
+          Delay_With_Alarm_Check(1000, alarm_hour, alarm_minute, alarm_second);
       }
 
       // MODE 1: Set Time (PC15 = 1, others = 0)
