@@ -107,6 +107,29 @@ Music Song[100];
   * @brief  The application entry point.
   * @retval int
   */
+
+void updateClock(void) {
+	  RTC->WPR = 0xCA; // Override Register write protection
+	  RTC->WPR = 0x53;
+
+	  RTC->ISR |= (1 << 7); // Set init bit to 1
+
+	  while((RTC->ISR & (1 << 6)) == 0); // Check initf bit
+	  {
+	  HAL_Delay(1);
+	  }
+
+	  RTC->PRER = 0x102; //Set lower portion to 258
+	  RTC->PRER |= 0x007F0000; //Set upper portion to 127
+
+	  RTC->CR &= ~(1 << 6); // Turn on FMT bit
+
+	  RTC->TR = 0x00000000;
+
+	  RTC->ISR &= ~(1 << 7); // Set init bit to 0
+
+	  RTC->WPR = 0xFF;
+}
 int main(void)
 {
   /* USER CODE BEGIN 1 */
@@ -140,7 +163,7 @@ int main(void)
   PWR->CR |= (1 << 8);   // Enable RTC write access
 
   RCC->BDCR &= ~(3 << 8); // Clear bits 9 & 8
-  RCC->BDCR |= (1 << 8); // Set bit 8 to 1
+  RCC->BDCR |= (1 << 9); // Set bit 9 to 1
   RCC->BDCR |=  (1 << 15); // Enable RTC
 
 
@@ -156,6 +179,7 @@ int main(void)
   RCC->APB2ENR |= 1<<8;  // Turn on ADC1 clock by forcing bit 8 to 1 while keeping other bits unchanged
   ADC1->SMPR2 |= 1; // 15 clock cycles per sample
   ADC1->CR2 |= 1;        // Turn on ADC1 by forcing bit 0 to 1 while keeping other bits unchanged
+
 
   /*****************************************************************************************************
   These commands are handled as part of the MX_TIM7_Init() function and don't need to be enabled
@@ -429,19 +453,15 @@ int main(void)
   Delay_msec = 200;
   Animate_On = 0;
 
-
+  // Main Arrays
   char Date[] = {CHAR_T, CHAR_H, CHAR_N, CHAR_0, CHAR_V, SPACE, CHAR_1, CHAR_3};
   char Year[] = {SPACE, SPACE, CHAR_2, CHAR_0, CHAR_2, CHAR_5, SPACE, SPACE};
 
   char Time[] = {CHAR_1, CHAR_2, CHAR_3, CHAR_0, SPACE, SPACE, CHAR_2, CHAR_7};
   char Alarm[] = {CHAR_1, CHAR_2, CHAR_1, CHAR_7, SPACE, SPACE, CHAR_5, CHAR_1};
   char Weekday[] = {CHAR_M, SPACE};
-  /* Main while loop implementation with mode switching */
 
-  // Add these global variables at the top with your other variables
-  unsigned int hour = 12;
-  unsigned int minute = 30;
-  unsigned int second = 0;
+  // Global Variables
   unsigned int alarm_hour = 12;
   unsigned int alarm_minute = 30;
   unsigned int alarm_second = 0;
@@ -467,19 +487,96 @@ int main(void)
       return (adc_val * (max_value + 1)) / 4096;
   }
 
+  // Function to write time values to RTC hardware
+  void Set_RTC_Time(unsigned int h, unsigned int m, unsigned int s)
+  {
+      RTC->WPR = 0xCA; // Disable write protection
+      RTC->WPR = 0x53;
+
+      RTC->ISR |= (1 << 7); // Enter initialization mode (INIT bit)
+
+      while((RTC->ISR & (1 << 6)) == 0); // Wait for INITF flag
+
+      // Convert to BCD format for RTC->TR register
+      // TR format: [PM/AM(1)][HT(2)][HU(4)][0][MNT(3)][MNU(4)][0][ST(3)][SU(4)]
+      unsigned int ht = h / 10;  // Hours tens
+      unsigned int hu = h % 10;  // Hours units
+      unsigned int mnt = m / 10; // Minutes tens
+      unsigned int mnu = m % 10; // Minutes units
+      unsigned int st = s / 10;  // Seconds tens
+      unsigned int su = s % 10;  // Seconds units
+
+      // Build TR register value (24-hour format, bit 22 = 0)
+      RTC->TR = (ht << 20) | (hu << 16) | (mnt << 12) | (mnu << 8) | (st << 4) | su;
+
+      RTC->ISR &= ~(1 << 7); // Exit initialization mode
+
+      RTC->WPR = 0xFF; // Enable write protection
+  }
+
+  // Helper function
+  void Get_RTC_Time(unsigned int *h, unsigned int *m, unsigned int *s)
+  {
+      unsigned int tr = RTC->TR;
+
+      // Extract BCD values and convert to decimal
+      unsigned int ht = (tr >> 20) & 0x3;   // Hours tens
+      unsigned int hu = (tr >> 16) & 0xF;   // Hours units
+      unsigned int mnt = (tr >> 12) & 0x7;  // Minutes tens
+      unsigned int mnu = (tr >> 8) & 0xF;   // Minutes units
+      unsigned int st = (tr >> 4) & 0x7;    // Seconds tens
+      unsigned int su = (tr >> 0) & 0xF;    // Seconds units
+
+      // Convert BCD to decimal
+      *h = (ht * 10) + hu;
+      *m = (mnt * 10) + mnu;
+      *s = (st * 10) + su;
+  }
+
   // Function to update display arrays
-  void Update_Time_Display(char* Time, unsigned int h, unsigned int m, unsigned int s)
+  void Update_Time_Display(char* Time, unsigned int h, unsigned int m, unsigned int s, int mode)
   {
 	  Time[0] = CHAR_T;
 	  Time[1] = SPACE;
-      Time[2] = (h / 10);
-      Time[3] = (h % 10);
-      Time[4] = (m / 10);
-      Time[5] = (m % 10);
-      Time[6] = (s / 10);
-      Time[7] = (s % 10);
+
+	  // Mode 1: Setting mode able to change with potentiometers
+	  if (mode == 1) {
+		  Time[2] = (h / 10);
+		  Time[3] = (h % 10);
+		  Time[4] = (m / 10);
+		  Time[5] = (m % 10);
+		  Time[6] = (s / 10);
+		  Time[7] = (s % 10);
+	  }
+
+	  // Mode 2: Take value of counting time register
+	  else {
+	  unsigned int tr = RTC->TR;
+
+	  unsigned int ht = (tr >> 20) & 0x3;
+
+	  unsigned int hu = (tr >> 16) & 0xF;
+
+	  unsigned int mnt = (tr >> 12) & 0x7;
+
+	  unsigned int mnu = (tr >> 8) & 0xF;
+
+	  unsigned int st = (tr >> 4) & 0x7;
+
+	  unsigned int su = (tr >> 0) & 0xF;
+
+	  Time[0] = CHAR_T;
+	  Time[1] = SPACE;
+      Time[2] = ht;
+      Time[3] = hu;
+      Time[4] = mnt;
+      Time[5] = mnu;
+      Time[6] = st;
+      Time[7] = su;
+	  }
   }
 
+  // Updates Alarm
   void Update_Alarm_Display(char* Alarm, unsigned int h, unsigned int m, unsigned int s)
     {
 	  	Alarm[0] = CHAR_A;
@@ -492,11 +589,10 @@ int main(void)
         Alarm[7] = (s % 10);
     }
 
-
+  // Updates Date
   void Update_Date_Display(char* Date, char* Weekday, unsigned int month, unsigned int day)
   {
-      // Format: THN0V 13 (example for Nov 13)
-      // You'll need to map month numbers to letters
+      // Format: THN0V 13
       Date[0] = Weekday[0];  // First letter of month
       Date[1] = Weekday[1];  // Second letter
       Date[2] = SPACE;
@@ -507,6 +603,7 @@ int main(void)
       Date[7] = (day % 10);
   }
 
+  // Updates Year
   void Update_Year_Display(char* Year, unsigned int th, unsigned int h, unsigned int t, unsigned int o)
   {
       Year[0] = SPACE;
@@ -519,30 +616,41 @@ int main(void)
       Year[7] = SPACE;
   }
 
-  while (GPIOC->IDR & 1)
-  {
-	  Music_ON = 0;
-  }
+  updateClock(); // Call update clock function
+
   /* Main Loop Implementation */
   while (1)
   {
-	  Seven_Segment(RTC->TR);
-	  HAL_Delay(5000);
       int i;
-      unsigned int sw_value = (GPIOC->IDR >> 12) & 15; // Read switches PC12-PC15
+
+      unsigned int sw_value = (GPIOC->IDR >> 11) & 0x1F; // Read switches PC11-PC15
+
+      // Get current time from RTC for alarm checking
+      unsigned int current_hour, current_minute, current_second;
+      Get_RTC_Time(&current_hour, &current_minute, &current_second);
 
       // Check if time matches alarm
-		if (hour == alarm_hour && minute == alarm_minute && second == alarm_second && !(GPIOC->IDR & 1)) {
-			Music_ON = 1;
-		} else if (GPIOC->IDR & 1) {
-		  Music_ON = 0;
-		}
+      if (current_hour == alarm_hour &&
+          current_minute == alarm_minute &&
+          current_second == alarm_second &&
+          !(GPIOC->IDR & 1)) {
+    	  INDEX = 0;
+    	  COUNT = 0;
+    	  Save_Note = Song[0].note; // Alarm has been triggered start from beginning
+
+          Music_ON = 1; // Turn alarm on
+
+          RTC->ISR &= ~(1 << 8); // Clear alarm flag
+      } else if (GPIOC->IDR & 1) {
+          Music_ON = 0; // Turn alarm off
+      }
+
       // MODE 0: Normal display cycling through time, date, year, alarm
       if (sw_value == 0)
       {
           // Update displays with current values
-          Update_Time_Display(Time, hour, minute, second);
-          Update_Alarm_Display(Alarm, hour, minute, second);
+          Update_Time_Display(Time, 0, 0, 0, 0);
+          Update_Alarm_Display(Alarm, alarm_hour, alarm_minute, alarm_second);
           Update_Date_Display(Date, Weekday, date_month, date_day);
           Update_Year_Display(Year, year_thousands, year_hundreds, year_tens, year_ones);
 
@@ -552,25 +660,11 @@ int main(void)
           }
           HAL_Delay(1000);
 
-          // Check if time matches alarm REPEATED SO DELAY IS SHORTER
-			if (hour == alarm_hour && minute == alarm_minute && second == alarm_second && !(GPIOC->IDR & 1)) {
-				Music_ON = 1;
-			} else if (GPIOC->IDR & 1) {
-			  Music_ON = 0;
-			}
-
           // Display Year
           for (i = 0; i < 8; i++){
               Seven_Segment_Digit(7-i, Year[i], 0);
           }
           HAL_Delay(1000);
-
-          // Check if time matches alarm REPEATED SO DELAY IS SHORTER
-			if (hour == alarm_hour && minute == alarm_minute && second == alarm_second && !(GPIOC->IDR & 1)) {
-				Music_ON = 1;
-			} else if (GPIOC->IDR & 1) {
-			  Music_ON = 0;
-			}
 
           // Display Time
           for (i = 0; i < 8; i++){
@@ -578,29 +672,15 @@ int main(void)
           }
           HAL_Delay(1000);
 
-          // Check if time matches alarm REPEATED SO DELAY IS SHORTER
-			if (hour == alarm_hour && minute == alarm_minute && second == alarm_second && !(GPIOC->IDR & 1)) {
-				Music_ON = 1;
-			} else if (GPIOC->IDR & 1) {
-			  Music_ON = 0;
-			}
-
           // Display Alarm
           for (i = 0; i < 8; i++){
               Seven_Segment_Digit(7-i, Alarm[i], 0);
           }
           HAL_Delay(1000);
-
-          // Check if time matches alarm REPEATED SO DELAY IS SHORTER
-			if (hour == alarm_hour && minute == alarm_minute && second == alarm_second && !(GPIOC->IDR & 1)) {
-				Music_ON = 1;
-			} else if (GPIOC->IDR & 1) {
-			  Music_ON = 0;
-			}
       }
 
       // MODE 1: Set Time (PC15 = 1, others = 0)
-      else if (sw_value == 8) // Binary 1000 = PC15 high
+      else if (sw_value == 16) // Binary 10000 = PC15 high
       {
           unsigned int adc1, adc2, adc3;
           unsigned int new_hour, new_minute, new_second;
@@ -615,21 +695,20 @@ int main(void)
           new_minute = ADC_to_Value(adc2, 59);  // 0-59 minutes
           new_second = ADC_to_Value(adc3, 59);  // 0-59 seconds
 
-          // Update time
-          hour = new_hour;
-          minute = new_minute;
-          second = new_second;
-
           // Update and display
-          Update_Time_Display(Time, hour, minute, second);
+          Update_Time_Display(Time, new_hour, new_minute, new_second, 1);
           for (i = 0; i < 8; i++){
               Seven_Segment_Digit(7-i, Time[i], 0);
           }
+
+          // Write to RTC hardware
+          Set_RTC_Time(new_hour, new_minute, new_second);
+
           HAL_Delay(100); // Faster refresh for adjustment
       }
 
       // MODE 2: Set Alarm (PC14 = 1, others = 0)
-      else if (sw_value == 4) // Binary 0100 = PC14 high
+      else if (sw_value == 8) // Binary 01000 = PC14 high
       {
           unsigned int adc1, adc2, adc3;
 
@@ -648,51 +727,70 @@ int main(void)
           for (i = 0; i < 8; i++){
               Seven_Segment_Digit(7-i, Alarm[i], 0);
           }
+
+          // Configure RTC hardware alarm (only needed once when setting alarm)
+             RTC->WPR = 0xCA;
+             RTC->WPR = 0x53;
+             RTC->CR &= ~(1 << 8); // Disable Alarm A
+             while(!(RTC->ISR & (1 << 0))); // Wait for ALRAWF
+
+             unsigned int ht = alarm_hour / 10, hu = alarm_hour % 10;
+             unsigned int mnt = alarm_minute / 10, mnu = alarm_minute % 10;
+             unsigned int st = alarm_second / 10, su = alarm_second % 10;
+
+             RTC->ALRMAR = (1 << 31) | (ht << 20) | (hu << 16) |
+                           (mnt << 12) | (mnu << 8) | (st << 4) | su;
+
+             RTC->CR |= (1 << 8);  // Enable Alarm A
+             RTC->WPR = 0xFF;
+
           HAL_Delay(100);
       }
 
       // MODE 3: Set Date (PC13 = 1, others = 0)
-      else if (sw_value == 2) // Binary 0010 = PC13 high
+      else if (sw_value == 4) // Binary 00100 = PC13 high
       {
           unsigned int adc1, adc2, adc3, weekdayInt;
 
           // Read potentiometers
-          adc1 = Read_ADC(1); // PA! for weekday
+          adc1 = Read_ADC(1); // PA1 for weekday
           adc2 = Read_ADC(2); // PA2 for month
           adc3 = Read_ADC(3); // PA3 for day
 
-          weekdayInt = ADC_to_Value(adc1, 7);
+          weekdayInt = ADC_to_Value(adc1, 7); // Read values 1-7 from potentiometer
+
           if (weekdayInt == 0) weekdayInt = 1; // Ensures weekday is at least 1
           switch (weekdayInt){
-          	  case 1:
-          		  Weekday[0] = CHAR_M;
-          		  Weekday[1] = SPACE;
-          		  break;
-          	  case 2:
-          		  Weekday[0] = CHAR_T;
-          		  Weekday[1] = SPACE;
-          		  break;
-          	  case 3:
-          		  Weekday[0] = CHAR_W;
-          		  Weekday[1] = SPACE;
-          		  break;
-          	  case 4:
-          		  Weekday[0] = CHAR_T;
-          		  Weekday[1] = CHAR_H;
-          		  break;
-          	  case 5:
-          		  Weekday[0] = CHAR_F;
-          		  Weekday[1] = SPACE;
-          		  break;
-          	  case 6:
-          		  Weekday[0] = CHAR_S;
-          		  Weekday[1] = SPACE;
-          		  break;
-          	  case 7:
-          		  Weekday[0] = CHAR_S;
-          		  Weekday[1] = CHAR_U;
-          		  break;
+              case 1:
+                  Weekday[0] = CHAR_M;
+                  Weekday[1] = SPACE;
+                  break;
+              case 2:
+                  Weekday[0] = CHAR_T;
+                  Weekday[1] = SPACE;
+                  break;
+              case 3:
+                  Weekday[0] = CHAR_W;
+                  Weekday[1] = SPACE;
+                  break;
+              case 4:
+                  Weekday[0] = CHAR_T;
+                  Weekday[1] = CHAR_H;
+                  break;
+              case 5:
+                  Weekday[0] = CHAR_F;
+                  Weekday[1] = SPACE;
+                  break;
+              case 6:
+                  Weekday[0] = CHAR_S;
+                  Weekday[1] = SPACE;
+                  break;
+              case 7:
+                  Weekday[0] = CHAR_S;
+                  Weekday[1] = CHAR_U;
+                  break;
           }
+
           // Convert to date values
           date_month = ADC_to_Value(adc2, 12); // 1-12 months
           if (date_month == 0) date_month = 1; // Ensure month is at least 1
@@ -709,18 +807,18 @@ int main(void)
       }
 
       // MODE 4: Set Year (PC12 = 1, others = 0)
-      else if (sw_value == 1) // Binary 0001 = PC12 high
+      else if (sw_value == 2) // Binary 0001 = PC12 high
       {
-          unsigned int adc2, adc3;
+          unsigned int adc1, adc2, adc3;
 
           // Read potentiometers
+          adc1 = Read_ADC(1); // PA1 for hundreds
           adc2 = Read_ADC(2); // PA2 for tens
           adc3 = Read_ADC(3); // PA3 for ones
 
           // Convert to year digits
-          // For practical range 2000-2099:
           year_thousands = 2;
-          year_hundreds = 0;
+          year_hundreds = ADC_to_Value(adc1, 9);
           year_tens = ADC_to_Value(adc2, 9);
           year_ones = ADC_to_Value(adc3, 9);
 
@@ -728,6 +826,15 @@ int main(void)
           Update_Year_Display(Year, year_thousands, year_hundreds, year_tens, year_ones);
           for (i = 0; i < 8; i++){
               Seven_Segment_Digit(7-i, Year[i], 0);
+          }
+          HAL_Delay(100);
+      }
+
+      // MODE 5: Display Running Clock (PC11 =1, others = 0)
+      else if (sw_value == 1){ // Binary 00001 = PC11 high
+          Update_Time_Display(Time, 0, 0, 0, 0);
+          for (i = 0; i < 8; i++){
+              Seven_Segment_Digit(7-i, Time[i], 0);
           }
           HAL_Delay(100);
       }
